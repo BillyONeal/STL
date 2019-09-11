@@ -154,7 +154,8 @@ _NODISCARD auto to_address(const _Ptr& _Val) noexcept {
 template <class _Fx>
 struct _Ref_fn { // pass function object by value as a reference
     template <class... _Args>
-    constexpr decltype(auto) operator()(_Args&&... _Vals) { // forward function call operator
+    constexpr decltype(auto) operator()(_Args&&... _Vals) noexcept(noexcept(_Fn(_STD forward<_Args>(_Vals)...))) {
+        // forward function call operator
         return _Fn(_STD forward<_Args>(_Vals)...);
     }
 
@@ -167,12 +168,12 @@ _INLINE_VAR constexpr bool
                                && conjunction_v<is_trivially_copy_constructible<_Fn>, is_trivially_destructible<_Fn>>;
 
 template <class _Fn, enable_if_t<_Pass_functor_by_value_v<_Fn>, int> = 0> // TRANSITION, if constexpr
-constexpr _Fn _Pass_fn(_Fn _Val) { // pass functor by value
+constexpr _Fn _Pass_fn(_Fn _Val) noexcept { // pass functor by value
     return _Val;
 }
 
 template <class _Fn, enable_if_t<!_Pass_functor_by_value_v<_Fn>, int> = 0>
-constexpr _Ref_fn<_Fn> _Pass_fn(_Fn& _Val) { // pass functor by "reference"
+constexpr _Ref_fn<_Fn> _Pass_fn(_Fn& _Val) noexcept { // pass functor by "reference"
     return {_Val};
 }
 
@@ -1075,9 +1076,18 @@ struct _Range_verifiable<_Iter, _Sentinel,
 template <class _Iter, class _Sentinel = _Iter>
 _INLINE_VAR constexpr bool _Range_verifiable_v = _Range_verifiable<_Iter, _Sentinel>::value;
 
+// Note: true even if !_Range_verifiable_v due to fallback
+template <class _Iter, class _Sentinel = _Iter, bool = _Range_verifiable_v<_Iter, _Sentinel>>
+_INLINE_VAR constexpr bool _Nothrow_range_verifiable = noexcept(
+    _Verify_range(_STD declval<const _Iter&>(), _STD declval<const _Sentinel&>()));
+
+template <class _Iter, class _Sentinel>
+_INLINE_VAR constexpr bool _Nothrow_range_verifiable<_Iter, _Sentinel, false> = true;
+
 #if _HAS_IF_CONSTEXPR
 template <class _Iter, class _Sentinel>
-constexpr void _Adl_verify_range(const _Iter& _First, const _Sentinel& _Last) {
+constexpr void _Adl_verify_range(const _Iter& _First, const _Sentinel& _Last) noexcept(
+    _Nothrow_range_verifiable<_Iter, _Sentinel>) {
     // check that [_First, _Last) forms an iterator range
     if constexpr (_Range_verifiable_v<_Iter, _Sentinel>) {
         _Verify_range(_First, _Last);
@@ -1088,18 +1098,20 @@ constexpr void _Adl_verify_range(const _Iter& _First, const _Sentinel& _Last) {
 }
 #else // ^^^ _HAS_IF_CONSTEXPR / !_HAS_IF_CONSTEXPR vvv
 template <class _Iter, class _Sentinel>
-constexpr void _Adl_verify_range1(const _Iter& _First, const _Sentinel& _Last, true_type) {
+constexpr void _Adl_verify_range1(const _Iter& _First, const _Sentinel& _Last, true_type) noexcept(
+    _Nothrow_range_verifiable<_Iter, _Sentinel>) {
     // check that [_First, _Last) forms an iterator range
     _Verify_range(_First, _Last);
 }
 
 template <class _Iter, class _Sentinel>
-constexpr void _Adl_verify_range1(const _Iter&, const _Sentinel&, false_type) {
+constexpr void _Adl_verify_range1(const _Iter&, const _Sentinel&, false_type) noexcept {
     // (don't) check that [_First, _Last) forms an iterator range
 }
 
 template <class _Iter, class _Sentinel>
-constexpr void _Adl_verify_range(const _Iter& _First, const _Sentinel& _Last) {
+constexpr void _Adl_verify_range(const _Iter& _First, const _Sentinel& _Last) noexcept(
+    _Nothrow_range_verifiable<_Iter, _Sentinel>) {
     // check that [_First, _Last) forms an iterator range
     _Adl_verify_range1(_First, _Last, bool_constant<_Range_verifiable_v<_Iter, _Sentinel>>{});
 }
@@ -1118,30 +1130,34 @@ template <class _Iter>
 _INLINE_VAR constexpr bool _Unwrappable_v = _Unwrappable<_Iter>::value;
 
 template <class _Iter, enable_if_t<_Unwrappable_v<_Iter>, int> = 0>
-_NODISCARD constexpr auto _Get_unwrapped(const _Iter& _It) {
+_NODISCARD constexpr auto _Get_unwrapped(const _Iter& _It) noexcept(
+    noexcept(_Implicitly_convert_to(_It._Unwrapped()))) {
     // unwrap an iterator previously subjected to _Adl_verify_range or otherwise validated
     return _It._Unwrapped();
 }
 
 template <class _Iter, enable_if_t<!_Unwrappable_v<_Iter>, int> = 0>
-_NODISCARD constexpr const _Iter& _Get_unwrapped(const _Iter& _It) {
+_NODISCARD constexpr const _Iter& _Get_unwrapped(const _Iter& _It) noexcept(is_nothrow_copy_constructible_v<_Iter>) {
     // (don't) unwrap an iterator previously subjected to _Adl_verify_range or otherwise validated
     return _It;
 }
 
 template <class _Iter, enable_if_t<!_Unwrappable_v<_Iter>, int> = 0>
-_NODISCARD constexpr const _Iter&& _Get_unwrapped(const _Iter&& _It) {
+_NODISCARD constexpr const _Iter&& _Get_unwrapped(const _Iter&& _It) noexcept {
     // (don't) unwrap an iterator previously subjected to _Adl_verify_range or otherwise validated
     return static_cast<const _Iter&&>(_It);
 }
 
 template <class _Ty>
-_NODISCARD constexpr _Ty* _Get_unwrapped(_Ty* const _Ptr) { // special case already-unwrapped pointers
+_NODISCARD constexpr _Ty* _Get_unwrapped(_Ty* const _Ptr) noexcept { // special case already-unwrapped pointers
     return _Ptr;
 }
 
 template <class _Iter>
 using _Unwrapped_t = _Remove_cvref_t<decltype(_Get_unwrapped(_STD declval<const _Iter&>()))>;
+
+template <class _Iter>
+_INLINE_VAR constexpr bool _Nothrow_unwrappable = noexcept(_Get_unwrapped(_STD declval<const _Iter&>()));
 
 // FUNCTION TEMPLATE _Get_unwrapped_unverified
 template <class _Iter, class = bool>
@@ -1158,25 +1174,28 @@ template <class _Iter>
 _INLINE_VAR constexpr bool _Unwrappable_for_unverified_v = _Unwrappable_v<_Iter>&& _Do_unwrap_when_unverified_v<_Iter>;
 
 template <class _Iter, enable_if_t<_Unwrappable_for_unverified_v<_Iter>, int> = 0>
-_NODISCARD constexpr auto _Get_unwrapped_unverified(const _Iter& _It) {
+_NODISCARD constexpr auto _Get_unwrapped_unverified(const _Iter& _It) noexcept(
+    noexcept(_Implicitly_convert_to(_It._Unwrapped()))) {
     // unwrap an iterator not previously subjected to _Adl_verify_range
     return _It._Unwrapped();
 }
 
 template <class _Iter, enable_if_t<!_Unwrappable_for_unverified_v<_Iter>, int> = 0>
-_NODISCARD constexpr const _Iter& _Get_unwrapped_unverified(const _Iter& _It) {
+_NODISCARD constexpr const _Iter& _Get_unwrapped_unverified(const _Iter& _It) noexcept(
+    is_nothrow_copy_constructible_v<_Iter>) {
     // (don't) unwrap an iterator not previously subjected to _Adl_verify_range
     return _It;
 }
 
 template <class _Iter, enable_if_t<!_Unwrappable_for_unverified_v<_Iter>, int> = 0>
-_NODISCARD constexpr const _Iter&& _Get_unwrapped_unverified(const _Iter&& _It) {
+_NODISCARD constexpr const _Iter&& _Get_unwrapped_unverified(const _Iter&& _It) noexcept {
     // (don't) unwrap an iterator not previously subjected to _Adl_verify_range
     return static_cast<const _Iter&&>(_It);
 }
 
 template <class _Ty>
-_NODISCARD constexpr _Ty* _Get_unwrapped_unverified(_Ty* const _Ptr) { // special case already-unwrapped pointers
+_NODISCARD constexpr _Ty* _Get_unwrapped_unverified(_Ty* const _Ptr) noexcept {
+    // special case already-unwrapped pointers
     return _Ptr;
 }
 
@@ -1209,8 +1228,18 @@ _INLINE_VAR constexpr bool _Offset_verifiable_v = _Offset_verifiable<_Iter>::val
 template <class _Iter>
 _INLINE_VAR constexpr bool _Unwrappable_for_offset_v = _Unwrappable_v<_Iter>&& _Offset_verifiable_v<_Iter>;
 
+// Note: true even when !_Unwrappable_for_offset_v
+template <class _Iter, bool = _Unwrappable_for_offset_v<_Iter>>
+_INLINE_VAR constexpr bool
+    _Nothrow_unwrappable_for_offset = noexcept(_STD declval<const _Iter&>()._Verify_offset(_Iter_diff_t<_Iter>{}))
+                                      && noexcept(_Implicitly_convert_to(_STD declval<const _Iter&>()._Unwrapped()));
+
+template <class _Iter>
+_INLINE_VAR constexpr bool _Nothrow_unwrappable_for_offset<_Iter, false> = true;
+
 template <class _Iter, class _Diff, enable_if_t<_Unwrappable_for_offset_v<_Iter> && is_integral_v<_Diff>, int> = 0>
-_NODISCARD constexpr auto _Get_unwrapped_n(const _Iter& _It, const _Diff _Off) {
+_NODISCARD constexpr auto _Get_unwrapped_n(const _Iter& _It, const _Diff _Off) noexcept(
+    _Nothrow_unwrappable_for_offset<_Iter>) {
     // ask an iterator to assert that the iterator moved _Off positions is valid, and unwrap
     using _IDiff     = _Iter_diff_t<_Iter>;
     using _CDiff     = common_type_t<_Diff, _IDiff>;
@@ -1230,7 +1259,8 @@ template <class _Iter, class _Diff,
         _Unwrappable_for_unverified_v<_Iter> //
             && ((!_Unwrappable_for_offset_v<_Iter> && is_integral_v<_Diff>) || is_same_v<_Diff, _Distance_unknown>),
         int> = 0>
-_NODISCARD constexpr auto _Get_unwrapped_n(const _Iter& _It, _Diff) {
+_NODISCARD constexpr auto _Get_unwrapped_n(const _Iter& _It, _Diff) noexcept(
+    noexcept(_Implicitly_convert_to(_It._Unwrapped()))) {
     // iterator doesn't support offset-based asserts, or offset unknown; defer to unverified unwrap
     return _It._Unwrapped();
 }
@@ -1240,7 +1270,8 @@ template <class _Iter, class _Diff,
         !_Unwrappable_for_unverified_v<_Iter> //
             && ((!_Unwrappable_for_offset_v<_Iter> && is_integral_v<_Diff>) || is_same_v<_Diff, _Distance_unknown>),
         int> = 0>
-_NODISCARD constexpr const _Iter& _Get_unwrapped_n(const _Iter& _It, _Diff) {
+_NODISCARD constexpr const _Iter& _Get_unwrapped_n(const _Iter& _It, _Diff) noexcept(
+    is_nothrow_copy_constructible_v<_Iter>) {
     // pass through lvalue iterator that doesn't participate in checking
     return _It;
 }
@@ -1250,13 +1281,13 @@ template <class _Iter, class _Diff,
         !_Unwrappable_for_unverified_v<_Iter> //
             && ((!_Unwrappable_for_offset_v<_Iter> && is_integral_v<_Diff>) || is_same_v<_Diff, _Distance_unknown>),
         int> = 0>
-_NODISCARD constexpr const _Iter&& _Get_unwrapped_n(const _Iter&& _It, _Diff) {
+_NODISCARD constexpr const _Iter&& _Get_unwrapped_n(const _Iter&& _It, _Diff) noexcept {
     // pass through rvalue iterator that doesn't participate in checking
     return static_cast<const _Iter&&>(_It);
 }
 
 template <class _Ty, class _Diff, enable_if_t<is_same_v<_Diff, _Distance_unknown> || is_integral_v<_Diff>, int> = 0>
-_NODISCARD constexpr _Ty* _Get_unwrapped_n(_Ty* const _Src, _Diff) {
+_NODISCARD constexpr _Ty* _Get_unwrapped_n(_Ty* const _Src, _Diff) noexcept {
     return _Src;
 }
 
@@ -1275,8 +1306,17 @@ template <class _Iter, class _UIter>
 _INLINE_VAR constexpr bool _Wrapped_seekable_v = _Wrapped_seekable<_Iter, _UIter>::value;
 
 #if _HAS_IF_CONSTEXPR
+// Note: might be true even when !_Wrapped_seekable_v
+template <class _Iter, class _UIter, bool = _Wrapped_seekable_v<_Iter, _UIter>>
+_INLINE_VAR constexpr bool _Nothrow_wrapped_seekable = noexcept(
+    _STD declval<_Iter&>()._Seek_to(_STD declval<const _UIter&>()));
+
 template <class _Iter, class _UIter>
-constexpr void _Seek_wrapped(_Iter& _It, const _UIter& _UIt) {
+_INLINE_VAR constexpr bool _Nothrow_wrapped_seekable<_Iter, _UIter, false> =
+    is_nothrow_assignable_v<_Iter&, const _UIter&>;
+
+template <class _Iter, class _UIter>
+constexpr void _Seek_wrapped(_Iter& _It, const _UIter& _UIt) noexcept(_Nothrow_wrapped_seekable<_Iter, _UIter>) {
     if constexpr (_Wrapped_seekable_v<_Iter, _UIter>) {
         _It._Seek_to(_UIt);
     } else {
@@ -1285,26 +1325,25 @@ constexpr void _Seek_wrapped(_Iter& _It, const _UIter& _UIt) {
 }
 #else // ^^^ _HAS_IF_CONSTEXPR / !_HAS_IF_CONSTEXPR vvv
 template <class _Iter, class _UIter, enable_if_t<_Wrapped_seekable_v<_Iter, _UIter>, int> = 0>
-constexpr void _Seek_wrapped(_Iter& _It, const _UIter& _UIt) {
+constexpr void _Seek_wrapped(_Iter& _It, const _UIter& _UIt) noexcept(noexcept(_It._Seek_to(_UIt))) {
     _It._Seek_to(_UIt);
 }
 
 template <class _Iter, class _UIter, enable_if_t<!_Wrapped_seekable_v<_Iter, _UIter>, int> = 0>
-constexpr void _Seek_wrapped(_Iter& _It, const _UIter& _UIt) {
+constexpr void _Seek_wrapped(_Iter& _It, const _UIter& _UIt) noexcept(noexcept(_It = _UIt)) {
     _It = _UIt;
 }
 #endif // _HAS_IF_CONSTEXPR
 
 template <class _Ty>
-constexpr void _Seek_wrapped(_Ty*& _It, _Ty* const _UIt) {
+constexpr void _Seek_wrapped(_Ty*& _It, _Ty* const _UIt) noexcept {
     _It = _UIt;
 }
 
 #if _HAS_CXX17
 // STRUCT TEMPLATE _Is_allocator
 template <class _Ty, class = void>
-struct _Is_allocator : false_type { // selected when _Ty can't possibly be an allocator
-};
+struct _Is_allocator : false_type {}; // selected when _Ty can't possibly be an allocator
 
 template <class _Ty>
 struct _Is_allocator<_Ty, void_t<typename _Ty::value_type, decltype(_STD declval<_Ty&>().deallocate(
@@ -1743,47 +1782,55 @@ public:
         : current(_STD move(_Right)) {}
 
     template <class _Other>
-    _CONSTEXPR17 reverse_iterator(const reverse_iterator<_Other>& _Right) : current(_Right.base()) {}
+    _CONSTEXPR17 reverse_iterator(const reverse_iterator<_Other>& _Right) noexcept(
+        is_nothrow_constructible_v<_BidIt, _Other>&& is_nothrow_copy_constructible_v<_Other>) /* strengthened */
+        : current(_Right.base()) {}
 
     template <class _Other>
-    _CONSTEXPR17 reverse_iterator& operator=(const reverse_iterator<_Other>& _Right) {
-
+    _CONSTEXPR17 reverse_iterator& operator=(const reverse_iterator<_Other>& _Right) noexcept(
+        noexcept(current = _Right.base())) /* strengthened */ {
         current = _Right.base();
         return *this;
     }
 
-    _NODISCARD _CONSTEXPR17 _BidIt base() const {
+    _NODISCARD _CONSTEXPR17 _BidIt base() const noexcept(is_nothrow_copy_constructible_v<_BidIt>) /* strengthened */ {
         return current;
     }
 
-    _NODISCARD _CONSTEXPR17 reference operator*() const {
+    _NODISCARD _CONSTEXPR17 reference operator*() const noexcept(is_nothrow_copy_constructible_v<_BidIt>&& noexcept(
+        _Implicitly_convert_to<reference>(*--(_STD declval<_BidIt&>())))) /* strengthened */ {
         _BidIt _Tmp = current;
         return *--_Tmp;
     }
 
-    _NODISCARD _CONSTEXPR17 pointer operator->() const {
+    _NODISCARD _CONSTEXPR17 pointer operator->() const
+        noexcept(is_nothrow_copy_constructible_v<_BidIt>&& noexcept(--(_STD declval<_BidIt&>()))
+                 && noexcept(_Implicitly_convert_to<pointer>(
+                     _Operator_arrow(_STD declval<_BidIt&>(), is_pointer<_BidIt>())))) /* strengthened */ {
         _BidIt _Tmp = current;
         --_Tmp;
         return _Operator_arrow(_Tmp, is_pointer<_BidIt>());
     }
 
-    _CONSTEXPR17 reverse_iterator& operator++() {
+    _CONSTEXPR17 reverse_iterator& operator++() noexcept(noexcept(--current)) /* strengthened */ {
         --current;
         return *this;
     }
 
-    _CONSTEXPR17 reverse_iterator operator++(int) {
+    _CONSTEXPR17 reverse_iterator operator++(int) noexcept(
+        is_nothrow_copy_constructible_v<_BidIt>&& noexcept(--current)) /* strengthened */ {
         reverse_iterator _Tmp = *this;
         --current;
         return _Tmp;
     }
 
-    _CONSTEXPR17 reverse_iterator& operator--() {
+    _CONSTEXPR17 reverse_iterator& operator--() noexcept(noexcept(++current)) /* strengthened */ {
         ++current;
         return *this;
     }
 
-    _CONSTEXPR17 reverse_iterator operator--(int) {
+    _CONSTEXPR17 reverse_iterator operator--(int) noexcept(
+        is_nothrow_copy_constructible_v<_BidIt>&& noexcept(++current)) /* strengthened */ {
         reverse_iterator _Tmp = *this;
         ++current;
         return _Tmp;
@@ -1791,45 +1838,51 @@ public:
 
     // N.B. functions valid for random-access iterators only beyond this point
 
-    _CONSTEXPR17 reverse_iterator& operator+=(const difference_type _Off) {
+    _CONSTEXPR17 reverse_iterator& operator+=(const difference_type _Off) noexcept(
+        noexcept(current -= _Off)) /* strengthened */ {
         current -= _Off;
         return *this;
     }
 
-    _NODISCARD _CONSTEXPR17 reverse_iterator operator+(const difference_type _Off) const {
+    _NODISCARD _CONSTEXPR17 reverse_iterator operator+(const difference_type _Off) const
+        noexcept(is_nothrow_copy_constructible_v<_BidIt>) /* strengthened */ {
         return reverse_iterator(current - _Off);
     }
 
-    _CONSTEXPR17 reverse_iterator& operator-=(const difference_type _Off) {
+    _CONSTEXPR17 reverse_iterator& operator-=(const difference_type _Off) noexcept(
+        noexcept(current += _Off)) /* strengthened */ {
         current += _Off;
         return *this;
     }
 
-    _NODISCARD _CONSTEXPR17 reverse_iterator operator-(const difference_type _Off) const {
+    _NODISCARD _CONSTEXPR17 reverse_iterator operator-(const difference_type _Off) const
+        noexcept(is_nothrow_copy_constructible_v<_BidIt>) /* strengthened */ {
         return reverse_iterator(current + _Off);
     }
 
-    _NODISCARD _CONSTEXPR17 reference operator[](const difference_type _Off) const {
+    _NODISCARD _CONSTEXPR17 reference operator[](const difference_type _Off) const
+        noexcept(noexcept(current[difference_type{}])) /* strengthened */ {
         return current[static_cast<difference_type>(-_Off - 1)];
     }
 
     using _Prevent_inheriting_unwrap = reverse_iterator;
 
     template <class _BidIt2 = _BidIt, enable_if_t<_Offset_verifiable_v<_BidIt2>, int> = 0>
-    constexpr void _Verify_offset(const difference_type _Off) const {
+    constexpr void _Verify_offset(const difference_type _Off) const noexcept(noexcept(current._Verify_offset(-_Off))) {
         _STL_VERIFY(_Off != _Min_possible_v<difference_type>, "integer overflow");
         current._Verify_offset(-_Off);
     }
 
     template <class _BidIt2 = _BidIt, enable_if_t<_Unwrappable_v<_BidIt2>, int> = 0>
-    _NODISCARD constexpr reverse_iterator<_Unwrapped_t<_BidIt2>> _Unwrapped() const {
+    _NODISCARD constexpr reverse_iterator<_Unwrapped_t<_BidIt2>> _Unwrapped() const
+        noexcept(noexcept(static_cast<reverse_iterator<_Unwrapped_t<_BidIt2>>>(current._Unwrapped()))) {
         return static_cast<reverse_iterator<_Unwrapped_t<_BidIt2>>>(current._Unwrapped());
     }
 
     static constexpr bool _Unwrap_when_unverified = _Do_unwrap_when_unverified_v<_BidIt>;
 
     template <class _Src, enable_if_t<_Wrapped_seekable_v<_BidIt, _Src>, int> = 0>
-    constexpr void _Seek_to(const reverse_iterator<_Src>& _It) {
+    constexpr void _Seek_to(const reverse_iterator<_Src>& _It) noexcept(noexcept(current._Seek_to(_It.base()))) {
         current._Seek_to(_It.base());
     }
 
@@ -1838,7 +1891,8 @@ protected:
 };
 
 template <class _BidIt, class _BidIt2, enable_if_t<_Range_verifiable_v<_BidIt, _BidIt2>, int> = 0>
-constexpr void _Verify_range(const reverse_iterator<_BidIt>& _First, const reverse_iterator<_BidIt2>& _Last) {
+constexpr void _Verify_range(const reverse_iterator<_BidIt>& _First, const reverse_iterator<_BidIt2>& _Last) noexcept(
+    noexcept(_Verify_range(_Last.base(), _First.base()))) {
     // TRANSITION, VSO#612785
     _Verify_range(_Last.base(), _First.base()); // note reversed parameters
 }
@@ -2765,101 +2819,101 @@ public:
     enum { _EEN_SIZE = _Size }; // helper for expression evaluator
 
 #if _ITERATOR_DEBUG_LEVEL == 0
-    _CONSTEXPR17 _Array_const_iterator() : _Ptr() {}
+    _CONSTEXPR17 _Array_const_iterator() noexcept : _Ptr() {}
 
-    _CONSTEXPR17 explicit _Array_const_iterator(pointer _Parg, size_t _Off = 0) : _Ptr(_Parg + _Off) {}
+    _CONSTEXPR17 explicit _Array_const_iterator(pointer _Parg, size_t _Off = 0) noexcept : _Ptr(_Parg + _Off) {}
 
-    _NODISCARD _CONSTEXPR17 reference operator*() const {
+    _NODISCARD _CONSTEXPR17 reference operator*() const noexcept {
         return *_Ptr;
     }
 
-    _NODISCARD _CONSTEXPR17 pointer operator->() const {
+    _NODISCARD _CONSTEXPR17 pointer operator->() const noexcept {
         return _Ptr;
     }
 
-    _CONSTEXPR17 _Array_const_iterator& operator++() {
+    _CONSTEXPR17 _Array_const_iterator& operator++() noexcept {
         ++_Ptr;
         return *this;
     }
 
-    _CONSTEXPR17 _Array_const_iterator operator++(int) {
+    _CONSTEXPR17 _Array_const_iterator operator++(int) noexcept {
         _Array_const_iterator _Tmp = *this;
         ++_Ptr;
         return _Tmp;
     }
 
-    _CONSTEXPR17 _Array_const_iterator& operator--() {
+    _CONSTEXPR17 _Array_const_iterator& operator--() noexcept {
         --_Ptr;
         return *this;
     }
 
-    _CONSTEXPR17 _Array_const_iterator operator--(int) {
+    _CONSTEXPR17 _Array_const_iterator operator--(int) noexcept {
         _Array_const_iterator _Tmp = *this;
         --_Ptr;
         return _Tmp;
     }
 
-    _CONSTEXPR17 _Array_const_iterator& operator+=(const ptrdiff_t _Off) {
+    _CONSTEXPR17 _Array_const_iterator& operator+=(const ptrdiff_t _Off) noexcept {
         _Ptr += _Off;
         return *this;
     }
 
-    _NODISCARD _CONSTEXPR17 _Array_const_iterator operator+(const ptrdiff_t _Off) const {
+    _NODISCARD _CONSTEXPR17 _Array_const_iterator operator+(const ptrdiff_t _Off) const noexcept {
         _Array_const_iterator _Tmp = *this;
         return _Tmp += _Off;
     }
 
-    _CONSTEXPR17 _Array_const_iterator& operator-=(const ptrdiff_t _Off) {
+    _CONSTEXPR17 _Array_const_iterator& operator-=(const ptrdiff_t _Off) noexcept {
         _Ptr -= _Off;
         return *this;
     }
 
-    _NODISCARD _CONSTEXPR17 _Array_const_iterator operator-(const ptrdiff_t _Off) const {
+    _NODISCARD _CONSTEXPR17 _Array_const_iterator operator-(const ptrdiff_t _Off) const noexcept {
         _Array_const_iterator _Tmp = *this;
         return _Tmp -= _Off;
     }
 
-    _NODISCARD _CONSTEXPR17 ptrdiff_t operator-(const _Array_const_iterator& _Right) const {
+    _NODISCARD _CONSTEXPR17 ptrdiff_t operator-(const _Array_const_iterator& _Right) const noexcept {
         return _Ptr - _Right._Ptr;
     }
 
-    _NODISCARD _CONSTEXPR17 reference operator[](const ptrdiff_t _Off) const {
+    _NODISCARD _CONSTEXPR17 reference operator[](const ptrdiff_t _Off) const noexcept {
         return _Ptr[_Off];
     }
 
-    _NODISCARD _CONSTEXPR17 bool operator==(const _Array_const_iterator& _Right) const {
+    _NODISCARD _CONSTEXPR17 bool operator==(const _Array_const_iterator& _Right) const noexcept {
         return _Ptr == _Right._Ptr;
     }
 
-    _NODISCARD _CONSTEXPR17 bool operator!=(const _Array_const_iterator& _Right) const {
+    _NODISCARD _CONSTEXPR17 bool operator!=(const _Array_const_iterator& _Right) const noexcept {
         return !(*this == _Right);
     }
 
-    _NODISCARD _CONSTEXPR17 bool operator<(const _Array_const_iterator& _Right) const {
+    _NODISCARD _CONSTEXPR17 bool operator<(const _Array_const_iterator& _Right) const noexcept {
         return _Ptr < _Right._Ptr;
     }
 
-    _NODISCARD _CONSTEXPR17 bool operator>(const _Array_const_iterator& _Right) const {
+    _NODISCARD _CONSTEXPR17 bool operator>(const _Array_const_iterator& _Right) const noexcept {
         return _Right < *this;
     }
 
-    _NODISCARD _CONSTEXPR17 bool operator<=(const _Array_const_iterator& _Right) const {
+    _NODISCARD _CONSTEXPR17 bool operator<=(const _Array_const_iterator& _Right) const noexcept {
         return !(_Right < *this);
     }
 
-    _NODISCARD _CONSTEXPR17 bool operator>=(const _Array_const_iterator& _Right) const {
+    _NODISCARD _CONSTEXPR17 bool operator>=(const _Array_const_iterator& _Right) const noexcept {
         return !(*this < _Right);
     }
 
     using _Prevent_inheriting_unwrap = _Array_const_iterator;
 
-    _NODISCARD constexpr pointer _Unwrapped() const {
+    _NODISCARD constexpr pointer _Unwrapped() const noexcept {
         return _Ptr;
     }
 
     static constexpr bool _Unwrap_when_unverified = true;
 
-    constexpr void _Seek_to(pointer _It) {
+    constexpr void _Seek_to(pointer _It) noexcept {
         _Ptr = _It;
     }
 
@@ -2867,41 +2921,41 @@ private:
     pointer _Ptr; // beginning of array
 
 #else // ^^^ _ITERATOR_DEBUG_LEVEL == 0 / _ITERATOR_DEBUG_LEVEL != 0 vvv
-    _CONSTEXPR17 _Array_const_iterator() : _Ptr(), _Idx(0) {}
+    _CONSTEXPR17 _Array_const_iterator() noexcept : _Ptr(), _Idx(0) {}
 
-    _CONSTEXPR17 explicit _Array_const_iterator(pointer _Parg, size_t _Off = 0) : _Ptr(_Parg), _Idx(_Off) {}
+    _CONSTEXPR17 explicit _Array_const_iterator(pointer _Parg, size_t _Off = 0) noexcept : _Ptr(_Parg), _Idx(_Off) {}
 
-    _NODISCARD _CONSTEXPR17 reference operator*() const {
+    _NODISCARD _CONSTEXPR17 reference operator*() const noexcept {
         return *operator->();
     }
 
-    _NODISCARD _CONSTEXPR17 pointer operator->() const {
+    _NODISCARD _CONSTEXPR17 pointer operator->() const noexcept {
         _STL_VERIFY(_Ptr, "cannot dereference value-initialized array iterator");
         _STL_VERIFY(_Idx < _Size, "cannot dereference out of range array iterator");
         return _Ptr + _Idx;
     }
 
-    _CONSTEXPR17 _Array_const_iterator& operator++() {
+    _CONSTEXPR17 _Array_const_iterator& operator++() noexcept {
         _STL_VERIFY(_Ptr, "cannot increment value-initialized array iterator");
         _STL_VERIFY(_Idx < _Size, "cannot increment array iterator past end");
         ++_Idx;
         return *this;
     }
 
-    _CONSTEXPR17 _Array_const_iterator operator++(int) {
+    _CONSTEXPR17 _Array_const_iterator operator++(int) noexcept {
         _Array_const_iterator _Tmp = *this;
         ++*this;
         return _Tmp;
     }
 
-    _CONSTEXPR17 _Array_const_iterator& operator--() {
+    _CONSTEXPR17 _Array_const_iterator& operator--() noexcept {
         _STL_VERIFY(_Ptr, "cannot decrement value-initialized array iterator");
         _STL_VERIFY(_Idx != 0, "cannot decrement array iterator before begin");
         --_Idx;
         return *this;
     }
 
-    _CONSTEXPR17 _Array_const_iterator operator--(int) {
+    _CONSTEXPR17 _Array_const_iterator operator--(int) noexcept {
         _Array_const_iterator _Tmp = *this;
         --*this;
         return _Tmp;
@@ -2922,68 +2976,68 @@ private:
         }
     }
 
-    _CONSTEXPR17 _Array_const_iterator& operator+=(const ptrdiff_t _Off) {
+    _CONSTEXPR17 _Array_const_iterator& operator+=(const ptrdiff_t _Off) noexcept {
         _Verify_offset(_Off);
         _Idx += _Off;
         return *this;
     }
 
-    _NODISCARD _CONSTEXPR17 _Array_const_iterator operator+(const ptrdiff_t _Off) const {
+    _NODISCARD _CONSTEXPR17 _Array_const_iterator operator+(const ptrdiff_t _Off) const noexcept {
         _Array_const_iterator _Tmp = *this;
         return _Tmp += _Off;
     }
 
-    _CONSTEXPR17 _Array_const_iterator& operator-=(const ptrdiff_t _Off) {
+    _CONSTEXPR17 _Array_const_iterator& operator-=(const ptrdiff_t _Off) noexcept {
         return *this += -_Off;
     }
 
-    _NODISCARD _CONSTEXPR17 _Array_const_iterator operator-(const ptrdiff_t _Off) const {
+    _NODISCARD _CONSTEXPR17 _Array_const_iterator operator-(const ptrdiff_t _Off) const noexcept {
         _Array_const_iterator _Tmp = *this;
         return _Tmp -= _Off;
     }
 
-    _NODISCARD _CONSTEXPR17 ptrdiff_t operator-(const _Array_const_iterator& _Right) const {
+    _NODISCARD _CONSTEXPR17 ptrdiff_t operator-(const _Array_const_iterator& _Right) const noexcept {
         _Compat(_Right);
         return static_cast<ptrdiff_t>(_Idx - _Right._Idx);
     }
 
-    _NODISCARD _CONSTEXPR17 reference operator[](const ptrdiff_t _Off) const {
+    _NODISCARD _CONSTEXPR17 reference operator[](const ptrdiff_t _Off) const noexcept {
         return *(*this + _Off);
     }
 
-    _NODISCARD _CONSTEXPR17 bool operator==(const _Array_const_iterator& _Right) const {
+    _NODISCARD _CONSTEXPR17 bool operator==(const _Array_const_iterator& _Right) const noexcept {
         _Compat(_Right);
         return _Idx == _Right._Idx;
     }
 
-    _NODISCARD _CONSTEXPR17 bool operator!=(const _Array_const_iterator& _Right) const {
+    _NODISCARD _CONSTEXPR17 bool operator!=(const _Array_const_iterator& _Right) const noexcept {
         return !(*this == _Right);
     }
 
-    _NODISCARD _CONSTEXPR17 bool operator<(const _Array_const_iterator& _Right) const {
+    _NODISCARD _CONSTEXPR17 bool operator<(const _Array_const_iterator& _Right) const noexcept {
         _Compat(_Right);
         return _Idx < _Right._Idx;
     }
 
-    _NODISCARD _CONSTEXPR17 bool operator>(const _Array_const_iterator& _Right) const {
+    _NODISCARD _CONSTEXPR17 bool operator>(const _Array_const_iterator& _Right) const noexcept {
         return _Right < *this;
     }
 
-    _NODISCARD _CONSTEXPR17 bool operator<=(const _Array_const_iterator& _Right) const {
+    _NODISCARD _CONSTEXPR17 bool operator<=(const _Array_const_iterator& _Right) const noexcept {
         return !(_Right < *this);
     }
 
-    _NODISCARD _CONSTEXPR17 bool operator>=(const _Array_const_iterator& _Right) const {
+    _NODISCARD _CONSTEXPR17 bool operator>=(const _Array_const_iterator& _Right) const noexcept {
         return !(*this < _Right);
     }
 
-    _CONSTEXPR17 void _Compat(const _Array_const_iterator& _Right) const { // test for compatible iterator pair
+    _CONSTEXPR17 void _Compat(const _Array_const_iterator& _Right) const noexcept { // test for compatible iterator pair
         _STL_VERIFY(_Ptr == _Right._Ptr, "array iterators incompatible");
     }
 
     using _Prevent_inheriting_unwrap = _Array_const_iterator;
 
-    _NODISCARD constexpr pointer _Unwrapped() const {
+    _NODISCARD constexpr pointer _Unwrapped() const noexcept {
         return _Ptr + _Idx;
     }
 
@@ -2992,7 +3046,7 @@ private:
         _STL_VERIFY(*this <= _Last, "array iterator range transposed");
     }
 
-    constexpr void _Seek_to(pointer _It) {
+    constexpr void _Seek_to(pointer _It) noexcept {
         _Idx = static_cast<size_t>(_It - _Ptr);
     }
 
@@ -3033,73 +3087,74 @@ public:
 
     _CONSTEXPR17 _Array_iterator() noexcept {}
 
-    _CONSTEXPR17 explicit _Array_iterator(pointer _Parg, size_t _Off = 0) : _Mybase(_Parg, _Off) {}
+    _CONSTEXPR17 explicit _Array_iterator(pointer _Parg, size_t _Off = 0) noexcept : _Mybase(_Parg, _Off) {}
 
-    _NODISCARD _CONSTEXPR17 reference operator*() const {
+    _NODISCARD _CONSTEXPR17 reference operator*() const noexcept {
         return const_cast<reference>(_Mybase::operator*());
     }
 
-    _NODISCARD _CONSTEXPR17 pointer operator->() const {
+    _NODISCARD _CONSTEXPR17 pointer operator->() const noexcept {
         return const_cast<pointer>(_Mybase::operator->());
     }
 
-    _CONSTEXPR17 _Array_iterator& operator++() {
+    _CONSTEXPR17 _Array_iterator& operator++() noexcept {
         _Mybase::operator++();
         return *this;
     }
 
-    _CONSTEXPR17 _Array_iterator operator++(int) {
+    _CONSTEXPR17 _Array_iterator operator++(int) noexcept {
         _Array_iterator _Tmp = *this;
         _Mybase::operator++();
         return _Tmp;
     }
 
-    _CONSTEXPR17 _Array_iterator& operator--() {
+    _CONSTEXPR17 _Array_iterator& operator--() noexcept {
         _Mybase::operator--();
         return *this;
     }
 
-    _CONSTEXPR17 _Array_iterator operator--(int) {
+    _CONSTEXPR17 _Array_iterator operator--(int) noexcept {
         _Array_iterator _Tmp = *this;
         _Mybase::operator--();
         return _Tmp;
     }
 
-    _CONSTEXPR17 _Array_iterator& operator+=(const ptrdiff_t _Off) {
+    _CONSTEXPR17 _Array_iterator& operator+=(const ptrdiff_t _Off) noexcept {
         _Mybase::operator+=(_Off);
         return *this;
     }
 
-    _NODISCARD _CONSTEXPR17 _Array_iterator operator+(const ptrdiff_t _Off) const {
+    _NODISCARD _CONSTEXPR17 _Array_iterator operator+(const ptrdiff_t _Off) const noexcept {
         _Array_iterator _Tmp = *this;
         return _Tmp += _Off;
     }
 
-    _CONSTEXPR17 _Array_iterator& operator-=(const ptrdiff_t _Off) {
+    _CONSTEXPR17 _Array_iterator& operator-=(const ptrdiff_t _Off) noexcept {
         _Mybase::operator-=(_Off);
         return *this;
     }
 
     using _Mybase::operator-;
 
-    _NODISCARD _CONSTEXPR17 _Array_iterator operator-(const ptrdiff_t _Off) const {
+    _NODISCARD _CONSTEXPR17 _Array_iterator operator-(const ptrdiff_t _Off) const noexcept {
         _Array_iterator _Tmp = *this;
         return _Tmp -= _Off;
     }
 
-    _NODISCARD _CONSTEXPR17 reference operator[](const ptrdiff_t _Off) const {
+    _NODISCARD _CONSTEXPR17 reference operator[](const ptrdiff_t _Off) const noexcept {
         return const_cast<reference>(_Mybase::operator[](_Off));
     }
 
     using _Prevent_inheriting_unwrap = _Array_iterator;
 
-    _NODISCARD constexpr pointer _Unwrapped() const {
+    _NODISCARD constexpr pointer _Unwrapped() const noexcept {
         return const_cast<pointer>(_Mybase::_Unwrapped());
     }
 };
 
 template <class _Ty, size_t _Size>
-_NODISCARD _CONSTEXPR17 _Array_iterator<_Ty, _Size> operator+(ptrdiff_t _Off, _Array_iterator<_Ty, _Size> _Next) {
+_NODISCARD _CONSTEXPR17 _Array_iterator<_Ty, _Size> operator+(
+    ptrdiff_t _Off, _Array_iterator<_Ty, _Size> _Next) noexcept {
     return _Next += _Off;
 }
 
@@ -3118,48 +3173,57 @@ public:
     using reference         = conditional_t<is_reference_v<_Ref0>, remove_reference_t<_Ref0>&&, _Ref0>;
     using iterator_type     = _Iter;
 
-    _CONSTEXPR17 move_iterator() : current() {}
+    _CONSTEXPR17 move_iterator() = default;
 
-    _CONSTEXPR17 explicit move_iterator(iterator_type _Right) : current(_Right) {}
+    _CONSTEXPR17 explicit move_iterator(iterator_type _Right) noexcept(
+        is_nothrow_copy_constructible_v<_Iter>) /* strengthened */
+        : current(_Right) {}
 
     template <class _Iter2>
-    _CONSTEXPR17 move_iterator(const move_iterator<_Iter2>& _Right) : current(_Right.base()) {}
+    _CONSTEXPR17 move_iterator(const move_iterator<_Iter2>& _Right) noexcept(
+        is_nothrow_copy_constructible_v<_Iter>) /* strengthened */
+        : current(_Right.base()) {}
 
     template <class _Iter2>
-    _CONSTEXPR17 move_iterator& operator=(const move_iterator<_Iter2>& _Right) {
+    _CONSTEXPR17 move_iterator& operator=(const move_iterator<_Iter2>& _Right) noexcept(
+        is_nothrow_copy_assignable_v<_Iter>) /* strengthened */ {
         current = _Right.base();
         return *this;
     }
 
-    _NODISCARD _CONSTEXPR17 _Iter base() const {
+    _NODISCARD _CONSTEXPR17 _Iter base() const noexcept(is_nothrow_copy_constructible_v<_Iter>) /* strengthened */ {
         return current;
     }
 
-    _NODISCARD _CONSTEXPR17 reference operator*() const {
+    _NODISCARD _CONSTEXPR17 reference operator*() const
+        noexcept(noexcept(static_cast<reference>(*current))) /* strengthened */ {
         return static_cast<reference>(*current);
     }
 
-    _NODISCARD _CONSTEXPR17 pointer operator->() const {
+    _NODISCARD _CONSTEXPR17 pointer operator->() const
+        noexcept(is_nothrow_copy_constructible_v<_Iter>) /* strengthened */ {
         return current;
     }
 
-    _CONSTEXPR17 move_iterator& operator++() {
+    _CONSTEXPR17 move_iterator& operator++() noexcept(noexcept(++current)) /* strengthened */ {
         ++current;
         return *this;
     }
 
-    _CONSTEXPR17 move_iterator operator++(int) {
+    _CONSTEXPR17 move_iterator operator++(int) noexcept(
+        noexcept(++current) && is_nothrow_copy_constructible_v<_Iter>) /* strengthened */ {
         move_iterator _Tmp = *this;
         ++current;
         return _Tmp;
     }
 
-    _CONSTEXPR17 move_iterator& operator--() {
+    _CONSTEXPR17 move_iterator& operator--() noexcept(noexcept(--current)) /* strengthened */ {
         --current;
         return *this;
     }
 
-    _CONSTEXPR17 move_iterator operator--(int) {
+    _CONSTEXPR17 move_iterator operator--(int) noexcept(
+        noexcept(--current) && is_nothrow_copy_constructible_v<_Iter>) /* strengthened */ {
         move_iterator _Tmp = *this;
         --current;
         return _Tmp;
@@ -3179,54 +3243,61 @@ public:
 
     // N.B. functions valid for random-access iterators only beyond this point
 
-    _CONSTEXPR17 move_iterator& operator+=(const difference_type _Off) {
+    _CONSTEXPR17 move_iterator& operator+=(const difference_type _Off) noexcept(
+        noexcept(current += _Off)) /* strengthened */ {
         current += _Off;
         return *this;
     }
 
-    _NODISCARD _CONSTEXPR17 move_iterator operator+(const difference_type _Off) const {
+    _NODISCARD _CONSTEXPR17 move_iterator operator+(const difference_type _Off) const
+        noexcept(noexcept(current + _Off) && is_nothrow_copy_constructible_v<_Iter>) /* strengthened */ {
         return move_iterator(current + _Off);
     }
 
-    _CONSTEXPR17 move_iterator& operator-=(const difference_type _Off) {
+    _CONSTEXPR17 move_iterator& operator-=(const difference_type _Off) noexcept(
+        noexcept(current -= _Off)) /* strengthened */ {
         current -= _Off;
         return *this;
     }
 
-    _NODISCARD _CONSTEXPR17 move_iterator operator-(const difference_type _Off) const {
+    _NODISCARD _CONSTEXPR17 move_iterator operator-(const difference_type _Off) const
+        noexcept(noexcept(current - _Off) && is_nothrow_copy_constructible_v<_Iter>) /* strengthened */ {
         return move_iterator(current - _Off);
     }
 
-    _NODISCARD _CONSTEXPR17 reference operator[](const difference_type _Off) const {
+    _NODISCARD _CONSTEXPR17 reference operator[](const difference_type _Off) const
+        noexcept(noexcept(current[_Off])) /* strengthened */ {
         return _STD move(current[_Off]);
     }
 
     template <class _Iter2, enable_if_t<_Range_verifiable_v<_Iter, _Iter2>, int> = 0>
-    friend constexpr void _Verify_range(const move_iterator& _First, const move_iterator<_Iter2>& _Last) {
+    friend constexpr void _Verify_range(const move_iterator& _First, const move_iterator<_Iter2>& _Last) noexcept(
+        noexcept(_Verify_range(_First.base(), _Last.base()))) {
         _Verify_range(_First.base(), _Last.base());
     }
 
     using _Prevent_inheriting_unwrap = move_iterator;
 
     template <class _Iter2 = iterator_type, enable_if_t<_Offset_verifiable_v<_Iter2>, int> = 0>
-    constexpr void _Verify_offset(const difference_type _Off) const {
+    constexpr void _Verify_offset(const difference_type _Off) const noexcept(noexcept(current._Verify_offset(_Off))) {
         current._Verify_offset(_Off);
     }
 
     template <class _Iter2 = iterator_type, enable_if_t<_Unwrappable_v<_Iter2>, int> = 0>
-    _NODISCARD constexpr move_iterator<_Unwrapped_t<_Iter2>> _Unwrapped() const {
+    _NODISCARD constexpr move_iterator<_Unwrapped_t<_Iter2>> _Unwrapped() const
+        noexcept(noexcept(static_cast<move_iterator<_Unwrapped_t<_Iter2>>>(current._Unwrapped()))) {
         return static_cast<move_iterator<_Unwrapped_t<_Iter2>>>(current._Unwrapped());
     }
 
     static constexpr bool _Unwrap_when_unverified = _Do_unwrap_when_unverified_v<iterator_type>;
 
     template <class _Src, enable_if_t<_Wrapped_seekable_v<iterator_type, _Src>, int> = 0>
-    constexpr void _Seek_to(const move_iterator<_Src>& _It) {
+    constexpr void _Seek_to(const move_iterator<_Src>& _It) noexcept(noexcept(current._Seek_to(_It.base()))) {
         current._Seek_to(_It.base());
     }
 
 protected:
-    iterator_type current; // the wrapped iterator
+    iterator_type current{}; // the wrapped iterator
 };
 
 template <class _Iter>
@@ -3236,50 +3307,58 @@ _NODISCARD _CONSTEXPR17 move_iterator<_Iter> operator+(
 }
 
 template <class _Iter1, class _Iter2>
-_NODISCARD _CONSTEXPR17 auto operator-(const move_iterator<_Iter1>& _Left, const move_iterator<_Iter2>& _Right)
+_NODISCARD _CONSTEXPR17 auto operator-(const move_iterator<_Iter1>& _Left,
+    const move_iterator<_Iter2>& _Right) noexcept(noexcept(_Left.base() - _Right.base())) /* strengthened */
     -> decltype(_Left.base() - _Right.base()) {
     return _Left.base() - _Right.base();
 }
 
 template <class _Iter1, class _Iter2>
-_NODISCARD _CONSTEXPR17 bool operator==(const move_iterator<_Iter1>& _Left, const move_iterator<_Iter2>& _Right) {
+_NODISCARD _CONSTEXPR17 bool operator==(const move_iterator<_Iter1>& _Left,
+    const move_iterator<_Iter2>& _Right) noexcept(noexcept(_Left.base() == _Right.base())) /* strengthened */ {
     return _Left.base() == _Right.base();
 }
 
 template <class _Iter1, class _Iter2>
-_NODISCARD _CONSTEXPR17 bool operator!=(const move_iterator<_Iter1>& _Left, const move_iterator<_Iter2>& _Right) {
+_NODISCARD _CONSTEXPR17 bool operator!=(const move_iterator<_Iter1>& _Left,
+    const move_iterator<_Iter2>& _Right) noexcept(noexcept(_Left.base() != _Right.base())) /* strengthened */ {
     return !(_Left == _Right);
 }
 
 template <class _Iter1, class _Iter2>
-_NODISCARD _CONSTEXPR17 bool operator<(const move_iterator<_Iter1>& _Left, const move_iterator<_Iter2>& _Right) {
+_NODISCARD _CONSTEXPR17 bool operator<(const move_iterator<_Iter1>& _Left,
+    const move_iterator<_Iter2>& _Right) noexcept(noexcept(_Left.base() < _Right.base())) /* strengthened */ {
     return _Left.base() < _Right.base();
 }
 
 template <class _Iter1, class _Iter2>
-_NODISCARD _CONSTEXPR17 bool operator>(const move_iterator<_Iter1>& _Left, const move_iterator<_Iter2>& _Right) {
+_NODISCARD _CONSTEXPR17 bool operator>(const move_iterator<_Iter1>& _Left,
+    const move_iterator<_Iter2>& _Right) noexcept(noexcept(_Right < _Left)) /* strengthened */ {
     return _Right < _Left;
 }
 
 template <class _Iter1, class _Iter2>
-_NODISCARD _CONSTEXPR17 bool operator<=(const move_iterator<_Iter1>& _Left, const move_iterator<_Iter2>& _Right) {
+_NODISCARD _CONSTEXPR17 bool operator<=(
+    const move_iterator<_Iter1>& _Left, const move_iterator<_Iter2>& _Right) noexcept(noexcept(!(_Right < _Left))) {
     return !(_Right < _Left);
 }
 
 template <class _Iter1, class _Iter2>
-_NODISCARD _CONSTEXPR17 bool operator>=(const move_iterator<_Iter1>& _Left, const move_iterator<_Iter2>& _Right) {
+_NODISCARD _CONSTEXPR17 bool operator>=(
+    const move_iterator<_Iter1>& _Left, const move_iterator<_Iter2>& _Right) noexcept(noexcept(!(_Left < _Right))) {
     return !(_Left < _Right);
 }
 
 // FUNCTION TEMPLATE make_move_iterator
 template <class _Iter>
-_NODISCARD _CONSTEXPR17 move_iterator<_Iter> make_move_iterator(_Iter _It) { // make move_iterator from iterator
+_NODISCARD _CONSTEXPR17 move_iterator<_Iter> make_move_iterator(_Iter _It) noexcept(
+    is_nothrow_copy_constructible_v<_Iter>) /* strengthened */ { // make move_iterator from iterator
     return move_iterator<_Iter>(_It);
 }
 
 // FUNCTION TEMPLATE copy
 template <class _InIt, class _OutIt>
-_OutIt _Copy_memmove(_InIt _First, _InIt _Last, _OutIt _Dest) { // implement copy-like function as memmove
+_OutIt _Copy_memmove(_InIt _First, _InIt _Last, _OutIt _Dest) noexcept { // implement copy-like function as memmove
     const char* const _First_ch = const_cast<const char*>(reinterpret_cast<const volatile char*>(_First));
     const char* const _Last_ch  = const_cast<const char*>(reinterpret_cast<const volatile char*>(_Last));
     char* const _Dest_ch        = const_cast<char*>(reinterpret_cast<volatile char*>(_Dest));
@@ -3289,13 +3368,22 @@ _OutIt _Copy_memmove(_InIt _First, _InIt _Last, _OutIt _Dest) { // implement cop
 }
 
 template <class _InIt, class _OutIt>
-_OutIt _Copy_memmove(move_iterator<_InIt> _First, move_iterator<_InIt> _Last, _OutIt _Dest) {
+_OutIt _Copy_memmove(move_iterator<_InIt> _First, move_iterator<_InIt> _Last, _OutIt _Dest) noexcept {
     return _Copy_memmove(_First.base(), _Last.base(), _Dest);
 }
 
+template <class _InIt, class _OutIt, bool = _Ptr_copy_cat<_InIt, _OutIt>::_Trivially_copyable>
+_INLINE_VAR constexpr bool _Nothrow_copy_unchecked = true;
+
+template <class _InIt, class _OutIt>
+_INLINE_VAR constexpr bool _Nothrow_copy_unchecked<_InIt, _OutIt, false> =
+    noexcept(_STD declval<_InIt&>() != _STD declval<_InIt&>())
+    && noexcept(++(_STD declval<_OutIt&>()), (void) ++(_STD declval<_InIt&>()))
+    && noexcept(*(_STD declval<_OutIt&>()) = *(_STD declval<_InIt&>())) && is_nothrow_copy_constructible_v<_OutIt>;
+
 #if _HAS_IF_CONSTEXPR
 template <class _InIt, class _OutIt>
-_OutIt _Copy_unchecked(_InIt _First, _InIt _Last, _OutIt _Dest) {
+_OutIt _Copy_unchecked(_InIt _First, _InIt _Last, _OutIt _Dest) noexcept(_Nothrow_copy_unchecked<_InIt, _OutIt>) {
     // copy [_First, _Last) to [_Dest, ...)
     // note: _Copy_unchecked is called directly from elsewhere in the STL
     if constexpr (_Ptr_copy_cat<_InIt, _OutIt>::_Trivially_copyable) {
@@ -3310,7 +3398,8 @@ _OutIt _Copy_unchecked(_InIt _First, _InIt _Last, _OutIt _Dest) {
 }
 #else // ^^^ _HAS_IF_CONSTEXPR / !_HAS_IF_CONSTEXPR vvv
 template <class _InIt, class _OutIt>
-_OutIt _Copy_unchecked1(_InIt _First, _InIt _Last, _OutIt _Dest, false_type) {
+_OutIt _Copy_unchecked1(_InIt _First, _InIt _Last, _OutIt _Dest, false_type) noexcept(
+    _Nothrow_copy_unchecked<_InIt, _OutIt>) {
     // copy [_First, _Last) to [_Dest, ...), arbitrary iterators
     for (; _First != _Last; ++_Dest, (void) ++_First) {
         *_Dest = *_First;
@@ -3320,13 +3409,13 @@ _OutIt _Copy_unchecked1(_InIt _First, _InIt _Last, _OutIt _Dest, false_type) {
 }
 
 template <class _InIt, class _OutIt>
-_OutIt _Copy_unchecked1(_InIt _First, _InIt _Last, _OutIt _Dest, true_type) {
+_OutIt _Copy_unchecked1(_InIt _First, _InIt _Last, _OutIt _Dest, true_type) noexcept {
     // copy [_First, _Last) to [_Dest, ...), pointers to trivially copyable
     return _Copy_memmove(_First, _Last, _Dest);
 }
 
 template <class _InIt, class _OutIt>
-_OutIt _Copy_unchecked(_InIt _First, _InIt _Last, _OutIt _Dest) {
+_OutIt _Copy_unchecked(_InIt _First, _InIt _Last, _OutIt _Dest) noexcept(_Nothrow_copy_unchecked<_InIt, _OutIt>) {
     // copy [_First, _Last) to [_Dest, ...)
     // note: _Copy_unchecked is called directly from elsewhere in the STL
     return _Copy_unchecked1(_First, _Last, _Dest, bool_constant<_Ptr_copy_cat<_InIt, _OutIt>::_Trivially_copyable>{});
@@ -3595,9 +3684,19 @@ _BidIt2 copy_backward(_ExPo&&, _BidIt1 _First, _BidIt1 _Last, _BidIt2 _Dest) noe
 #endif // _HAS_CXX17
 
 // FUNCTION TEMPLATE move
+template <class _InIt, class _OutIt, bool = _Ptr_copy_cat<_InIt, _OutIt>::_Trivially_copyable>
+_INLINE_VAR constexpr bool _Nothrow_move_unchecked = true;
+
+template <class _InIt, class _OutIt>
+_INLINE_VAR constexpr bool _Nothrow_move_unchecked<_InIt, _OutIt, false> =
+    noexcept(_STD declval<_InIt&>() != _STD declval<_InIt&>())
+    && noexcept(++(_STD declval<_OutIt&>()), (void) ++(_STD declval<_InIt&>()))
+    && noexcept(*(_STD declval<_OutIt&>()) = _STD move(*(_STD declval<_InIt&>())))
+    && is_nothrow_copy_constructible_v<_OutIt>;
+
 #if _HAS_IF_CONSTEXPR
 template <class _InIt, class _OutIt>
-_OutIt _Move_unchecked(_InIt _First, _InIt _Last, _OutIt _Dest) {
+_OutIt _Move_unchecked(_InIt _First, _InIt _Last, _OutIt _Dest) noexcept(_Nothrow_move_unchecked<_InIt, _OutIt>) {
     // move [_First, _Last) to [_Dest, ...)
     // note: _Move_unchecked is called directly from elsewhere in the STL
     if constexpr (_Ptr_move_cat<_InIt, _OutIt>::_Trivially_copyable) {
@@ -3612,7 +3711,8 @@ _OutIt _Move_unchecked(_InIt _First, _InIt _Last, _OutIt _Dest) {
 }
 #else // ^^^ _HAS_IF_CONSTEXPR / !_HAS_IF_CONSTEXPR vvv
 template <class _InIt, class _OutIt>
-_OutIt _Move_unchecked1(_InIt _First, _InIt _Last, _OutIt _Dest, false_type) {
+_OutIt _Move_unchecked1(_InIt _First, _InIt _Last, _OutIt _Dest, false_type) noexcept(
+    _Nothrow_move_unchecked<_InIt, _OutIt>) {
     // move [_First, _Last) to [_Dest, ...), no special optimization
     for (; _First != _Last; ++_Dest, (void) ++_First) {
         *_Dest = _STD move(*_First);
@@ -3622,13 +3722,13 @@ _OutIt _Move_unchecked1(_InIt _First, _InIt _Last, _OutIt _Dest, false_type) {
 }
 
 template <class _InIt, class _OutIt>
-_OutIt _Move_unchecked1(_InIt _First, _InIt _Last, _OutIt _Dest, true_type) {
+_OutIt _Move_unchecked1(_InIt _First, _InIt _Last, _OutIt _Dest, true_type) noexcept {
     // move [_First, _Last) to [_Dest, ...), memmove optimization
     return _Copy_memmove(_First, _Last, _Dest);
 }
 
 template <class _InIt, class _OutIt>
-_OutIt _Move_unchecked(_InIt _First, _InIt _Last, _OutIt _Dest) {
+_OutIt _Move_unchecked(_InIt _First, _InIt _Last, _OutIt _Dest) noexcept(_Nothrow_move_unchecked<_InIt, _OutIt>) {
     // move [_First, _Last) to [_Dest, ...), choose optimization
     // note: _Move_unchecked is called directly from elsewhere in the STL
     return _Move_unchecked1(_First, _Last, _Dest, bool_constant<_Ptr_move_cat<_InIt, _OutIt>::_Trivially_copyable>{});
@@ -3776,9 +3876,24 @@ _INLINE_VAR constexpr bool _Fill_memset_is_safe =
         is_assignable<_Iter_ref_t<_FwdIt>, const _Ty&>>;
 // clang-format on
 
+template <class _FwdIt, class _Ty, bool = _Fill_memset_is_safe<_Unwrapped_t<_FwdIt>, _Ty>>
+_INLINE_VAR constexpr bool _Nothrow_fillable = true;
+
+// clang-format off
+template <class _FwdIt, class _Ty>
+_INLINE_VAR constexpr bool _Nothrow_fillable<_FwdIt, _Ty, false> =
+    _Nothrow_range_verifiable<_FwdIt>
+    && _Nothrow_unwrappable<_FwdIt>
+    && noexcept(_STD declval<_Unwrapped_t<_FwdIt>&>() == _STD declval<const _Unwrapped_t<_FwdIt>&>())
+    && noexcept(++(_STD declval<_Unwrapped_t<_FwdIt>&>()))
+    && noexcept(*(_STD declval<_Unwrapped_t<_FwdIt>&>()) = _STD declval<const _Ty&>());
+// clang-format on
+
 #if _HAS_IF_CONSTEXPR
 template <class _FwdIt, class _Ty>
-void fill(const _FwdIt _First, const _FwdIt _Last, const _Ty& _Val) { // copy _Val through [_First, _Last)
+void fill(const _FwdIt _First, const _FwdIt _Last, const _Ty& _Val) noexcept(
+    _Nothrow_fillable<_FwdIt, _Ty>) /* strengthened */ {
+    // copy _Val through [_First, _Last)
     _Adl_verify_range(_First, _Last);
     auto _UFirst      = _Get_unwrapped(_First);
     const auto _ULast = _Get_unwrapped(_Last);
@@ -3792,7 +3907,8 @@ void fill(const _FwdIt _First, const _FwdIt _Last, const _Ty& _Val) { // copy _V
 }
 #else // ^^^ _HAS_IF_CONSTEXPR // !_HAS_IF_CONSTEXPR vvv
 template <class _FwdIt, class _Ty>
-void _Fill_unchecked1(_FwdIt _First, _FwdIt _Last, const _Ty& _Val, false_type) {
+void _Fill_unchecked1(_FwdIt _First, _FwdIt _Last, const _Ty& _Val, false_type) noexcept(
+    _Nothrow_fillable<_FwdIt, _Ty>) /* strengthened */ {
     // copy _Val through [_First, _Last), no special optimization
     for (; _First != _Last; ++_First) {
         *_First = _Val;
@@ -3800,13 +3916,14 @@ void _Fill_unchecked1(_FwdIt _First, _FwdIt _Last, const _Ty& _Val, false_type) 
 }
 
 template <class _FwdIt, class _Ty>
-void _Fill_unchecked1(_FwdIt _First, _FwdIt _Last, const _Ty& _Val, true_type) {
+void _Fill_unchecked1(_FwdIt _First, _FwdIt _Last, const _Ty& _Val, true_type) noexcept {
     // copy _Val through [_First, _Last), memset optimization
     _CSTD memset(_First, static_cast<unsigned char>(_Val), static_cast<size_t>(_Last - _First));
 }
 
 template <class _FwdIt, class _Ty>
-void fill(_FwdIt _First, _FwdIt _Last, const _Ty& _Val) { // copy _Val through [_First, _Last)
+void fill(_FwdIt _First, _FwdIt _Last, const _Ty& _Val) noexcept(_Nothrow_fillable<_FwdIt, _Ty>) /* strengthened */ {
+    // copy _Val through [_First, _Last)
     _Adl_verify_range(_First, _Last);
     _Fill_unchecked1(_Get_unwrapped(_First), _Get_unwrapped(_Last), _Val,
         bool_constant<_Fill_memset_is_safe<_Unwrapped_t<_FwdIt>, _Ty>>{});
