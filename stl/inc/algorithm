@@ -3321,6 +3321,8 @@ void inplace_merge(_ExPo&&, _BidIt _First, _BidIt _Mid, _BidIt _Last) noexcept /
 template <class _BidIt, class _Pr>
 _BidIt _Insertion_sort_unchecked(_BidIt _First, const _BidIt _Last, _Pr _Pred) {
     // insertion sort [_First, _Last), using _Pred
+    __assume(_Last >= _First);
+    __assume(_Last - _First <= _ISORT_MAX);
     if (_First != _Last) {
         _BidIt _Next_prev;
         for (_BidIt _Next = _First;
