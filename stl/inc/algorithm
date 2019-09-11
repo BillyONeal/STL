@@ -3322,19 +3322,32 @@ template <class _BidIt, class _Pr>
 _BidIt _Insertion_sort_unchecked(_BidIt _First, const _BidIt _Last, _Pr _Pred) {
     // insertion sort [_First, _Last), using _Pred
     if (_First != _Last) {
-        for (_BidIt _Next = _First; ++_Next != _Last;) { // order next element
-            _BidIt _Next1              = _Next;
-            _Iter_value_t<_BidIt> _Val = _STD move(*_Next);
+        _BidIt _Next_prev;
+        for (_BidIt _Next = _First;
+             _Next_prev   = _Next, ++_Next != _Last;) { // order the element *_Next in the range [_First, _Next]
+            if (_DEBUG_LT_PRED(_Pred, *_Next, *_Next_prev)) { // *_Next is out of position, find where it goes
+                _BidIt _Next1              = _Next;
+                _Iter_value_t<_BidIt> _Val = _STD move(*_Next);
+                if (_DEBUG_LT_PRED(_Pred, _Val, *_First)) { // found new earliest element, move to front
+                    for (;;) {
+                        *_Next1 = _STD move(*_Next_prev);
+                        if (_Next_prev == _First) {
+                            break;
+                        }
 
-            if (_DEBUG_LT_PRED(_Pred, _Val, *_First)) { // found new earliest element, move to front
-                _Move_backward_unchecked(_First, _Next, ++_Next1);
-                *_First = _STD move(_Val);
-            } else { // look for insertion point after first
-                for (_BidIt _First1 = _Next1; _DEBUG_LT_PRED(_Pred, _Val, *--_First1); _Next1 = _First1) {
-                    *_Next1 = _STD move(*_First1); // move hole down
+                        _Next1 = _Next_prev;
+                        --_Next_prev;
+                    }
+
+                    *_First = _STD move(_Val);
+                } else { // move elements greater than _Val into the hole
+                    do { // search from end avoids compares with more than 1 element equal to _Val
+                        *_Next1 = _STD move(*_Next_prev);
+                        _Next1  = _Next_prev;
+                    } // can't go before _First because *_First is less:
+                    while (_DEBUG_LT_PRED(_Pred, _Val, *--_Next_prev));
+                    *_Next1 = _STD move(_Val);
                 }
-
-                *_Next1 = _STD move(_Val); // insert element in hole
             }
         }
     }
