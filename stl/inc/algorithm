@@ -3476,7 +3476,7 @@ void _Sort_unchecked(_RanIt _First, _RanIt _Last, _Iter_diff_t<_RanIt> _Ideal, _
     if (_ISORT_MAX < _Count) { // heap sort if too many divisions
         _Make_heap_unchecked(_First, _Last, _Pred);
         _Sort_heap_unchecked(_First, _Last, _Pred);
-    } else if (2 <= _Count) {
+    } else {
         _Insertion_sort_unchecked(_First, _Last, _Pred); // small
     }
 }
