@@ -19,33 +19,6 @@
 #include <utility>
 #include <vector>
 
-#include <Windows.h>
-
-class tp_wait {
-public:
-    explicit tp_wait(PTP_WAIT_CALLBACK pfnwa, PVOID pv, PTP_CALLBACK_ENVIRON pcbe)
-        : wait(CreateThreadpoolWait(pfnwa, pv, pcbe)) {
-        if (!wait) {
-            api_failure("CreateThreadpoolWait");
-        }
-    }
-
-    tp_wait(const tp_wait&) = delete;
-    tp_wait& operator=(const tp_wait&) = delete;
-
-    void wait_for(const HANDLE waitOn) noexcept {
-        SetThreadpoolWait(wait, waitOn, nullptr);
-    }
-
-    ~tp_wait() {
-        WaitForThreadpoolWaitCallbacks(wait, TRUE);
-        CloseThreadpoolWait(wait);
-    }
-
-private:
-    PTP_WAIT wait{};
-};
-
 class parallelizer {
 public:
     parallelizer() : subprocesses(std::make_unique<entry[]>(availableConcurrency)) {
