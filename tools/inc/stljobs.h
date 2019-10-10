@@ -7,6 +7,8 @@
 #include <assert.h>
 #include <atomic>
 #include <exception>
+#include <filesystem>
+#include <functional>
 #include <iterator>
 #include <limits.h>
 #include <memory>
@@ -17,6 +19,7 @@
 #include <string>
 #include <string_view>
 #include <utility>
+#include <variant>
 
 #include <Windows.h>
 #include <userenv.h>
@@ -87,6 +90,12 @@ public:
         if (impl != EmptyPolicy::Empty) {
             close_handle(impl);
             impl = EmptyPolicy::Empty;
+        }
+    }
+
+    void wait() {
+        if (WaitForSingleObject(impl, INFINITE) != WAIT_OBJECT_0) {
+            api_failure("WaitForSingleObject");
         }
     }
 
@@ -211,6 +220,10 @@ public:
         }
 
         fileHandle = std::move(fileHandle_);
+        if (!SetFileCompletionNotificationModes(
+                fileHandle.get(), FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE)) {
+            api_failure("SetFileCompletionNotificationModes");
+        }
     }
 
     tp_io(tp_io&& other) noexcept : fileHandle(std::move(other.fileHandle)), io(std::exchange(other.io, nullptr)) {}
@@ -251,7 +264,6 @@ public:
 
     handle<invalid_handle_value_policy> close() noexcept {
         assert(io != nullptr);
-        WaitForThreadpoolIoCallbacks(io, TRUE);
         CloseThreadpoolIo(io);
         io = nullptr;
         return std::move(fileHandle);
@@ -292,11 +304,6 @@ struct output_collecting_pipe {
             PIPE_ACCESS_INBOUND | FILE_FLAG_FIRST_PIPE_INSTANCE | FILE_FLAG_OVERLAPPED,
             PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS, 1, 0, kernelBufferSize, 0,
             nullptr);
-
-        if (!SetFileCompletionNotificationModes(
-                readHandle.get(), FILE_SKIP_COMPLETION_PORT_ON_SUCCESS | FILE_SKIP_SET_EVENT_ON_HANDLE)) {
-            api_failure("SetFileCompletionNotificationModes");
-        }
 
         SECURITY_ATTRIBUTES inheritSa;
         inheritSa.nLength              = sizeof(inheritSa);
@@ -642,3 +649,302 @@ private:
     PTP_WAIT wait{};
 };
 
+
+class work_tracker {
+public:
+    work_tracker() noexcept : outstandingWork{} {}
+    work_tracker(size_t initialCount) noexcept : outstandingWork{initialCount} {}
+
+    work_tracker(const work_tracker&) = delete;
+    work_tracker& operator=(const work_tracker&) = delete;
+
+    void inc() noexcept {
+        outstandingWork.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    bool dec() noexcept {
+        const auto result = outstandingWork.fetch_sub(1, std::memory_order_acq_rel) == 1;
+        if (result) {
+            WakeByAddressAll(&outstandingWork);
+        }
+
+        return result;
+    }
+
+    void wait() noexcept {
+        size_t zero = 0;
+        while (outstandingWork != zero) {
+            if (!WaitOnAddress(&outstandingWork, &zero, sizeof(size_t), INFINITE)) {
+                abort();
+            }
+        }
+    }
+
+private:
+    std::atomic<size_t> outstandingWork;
+};
+
+template <class Receiver, class Fn>
+struct then_receiver {
+    Receiver receiver;
+    Fn fn;
+    template <class... Args>
+    void set_value(Args&&... vals) {
+        receiver.set_value(fn(std::forward<Args>(vals)...));
+    }
+    void set_error(std::exception_ptr ex) {
+        receiver.set_error(std::move(ex));
+    }
+};
+
+template <class Sender, class Fn>
+struct then_sender {
+    Sender predecessor;
+    Fn fn;
+
+    template <class Receiver>
+    void operator()(Receiver receiver) {
+        predecessor(then_receiver<Receiver, Fn>{std::move(receiver), std::move(fn)});
+    }
+};
+
+template <class Sender, class Fn>
+then_sender<Sender, Fn> then(Sender sender, Fn fn) {
+    return then_sender<Sender, Fn>{std::move(sender), std::move(fn)};
+}
+
+struct file_contents_result {
+    std::filesystem::path name;
+    std::string contents;
+};
+
+template <class Receiver>
+class read_file_contents_async_state {
+public:
+    explicit read_file_contents_async_state(Receiver receiver_, std::filesystem::path&& fileName_)
+        : fileName(std::move(fileName_)), receiver(receiver_),
+          io(create_file(fileName.c_str(), FILE_READ_DATA | SYNCHRONIZE, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
+                 FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN, HANDLE{}),
+              callback, this) {
+        read_some();
+    }
+
+    read_file_contents_async_state(const read_file_contents_async_state&) = delete;
+    read_file_contents_async_state& operator=(const read_file_contents_async_state&) = delete;
+
+private:
+    static constexpr size_t bufferSizeInc = 4096;
+
+    std::filesystem::path fileName;
+    Receiver receiver;
+    tp_io io;
+    OVERLAPPED overlapped{};
+    std::string buffer;
+
+
+    void set_api_failure(const char* const api, const unsigned long lastError) {
+        auto localReceiver = std::move(receiver);
+        delete this;
+        localReceiver.set_error(std::make_exception_ptr(api_exception(api, lastError)));
+    }
+
+    void set_too_long() {
+        auto localReceiver = std::move(receiver);
+        delete this;
+        localReceiver.set_error(std::make_exception_ptr(std::length_error("The file was too long.")));
+    }
+
+    void complete() {
+        auto localReceiver = std::move(receiver);
+        file_contents_result result{std::move(fileName), std::move(buffer)};
+        delete this;
+        localReceiver.set_value(std::move(result));
+    }
+
+    void read_some() {
+        io.start_threadpool_io();
+        for (;;) {
+            const auto oldBufferSize = buffer.size();
+            const auto oldBufferCap  = buffer.capacity();
+            const auto freeSpace     = oldBufferCap - oldBufferSize;
+            size_t minAttempt;
+            if (buffer.max_size() - oldBufferSize < bufferSizeInc) {
+                minAttempt = buffer.max_size();
+            } else {
+                minAttempt = oldBufferSize + bufferSizeInc;
+            }
+
+            const auto growBy = std::max(freeSpace, minAttempt);
+            buffer.resize(oldBufferSize + growBy);
+            buffer.resize(buffer.capacity());
+            const auto newCap = buffer.capacity() - oldBufferSize;
+            if (newCap == 0) {
+                io.cancel_threadpool_io();
+                set_too_long();
+                return;
+            }
+
+            DWORD thisRead;
+            if (newCap > static_cast<DWORD>(-1)) {
+                thisRead = static_cast<DWORD>(-1);
+            } else {
+                thisRead = static_cast<DWORD>(newCap);
+            }
+
+            overlapped.Offset = static_cast<unsigned long>(oldBufferSize);
+            if constexpr (sizeof(size_t) == 4) {
+                overlapped.OffsetHigh = 0;
+            } else {
+                overlapped.OffsetHigh = static_cast<unsigned long>(oldBufferSize >> 32);
+            }
+
+            DWORD bytesRead = 0;
+            if (!ReadFile(io.get_file(), buffer.data() + oldBufferSize, thisRead, &bytesRead, &overlapped)) {
+                break;
+            }
+
+            buffer.resize(oldBufferSize + bytesRead);
+        }
+
+        const auto lastError = GetLastError();
+        switch (lastError) {
+        case ERROR_IO_PENDING:
+            return;
+        case ERROR_HANDLE_EOF:
+            complete();
+            return;
+        default:
+            io.cancel_threadpool_io();
+            set_api_failure("ReadFile", lastError);
+            return;
+        }
+    }
+
+    static void __stdcall callback(PTP_CALLBACK_INSTANCE, void* const thisRaw, void*, const ULONG ioResult,
+        const ULONG_PTR bytes, PTP_IO) noexcept {
+        const auto this_ = static_cast<read_file_contents_async_state*>(thisRaw);
+        uint64_t offset  = this_->overlapped.OffsetHigh;
+        offset <<= 32;
+        offset |= this_->overlapped.Offset;
+        offset += bytes;
+        this_->buffer.resize(static_cast<size_t>(offset));
+        switch (ioResult) {
+        case ERROR_SUCCESS:
+            this_->read_some();
+            return;
+        case ERROR_HANDLE_EOF:
+            this_->complete();
+            return;
+        default:
+            this_->set_api_failure("ReadFile", ioResult);
+            return;
+        }
+    }
+};
+
+struct read_file_contents_async_sender {
+    std::filesystem::path fileName;
+
+    template <class Receiver>
+    void operator()(Receiver receiver) {
+        (void) new read_file_contents_async_state<Receiver>(std::move(receiver), fileName.c_str());
+    }
+};
+
+read_file_contents_async_sender read_file_contents_async(std::filesystem::path fileName) {
+    return read_file_contents_async_sender{std::move(fileName)};
+};
+
+template <class T>
+struct sync_wait_state {
+    work_tracker done{1};
+    std::variant<std::monostate, std::exception_ptr, T> data;
+};
+
+template <class T>
+struct sync_wait_receiver {
+    sync_wait_state<T>* pst;
+
+    template <class... Args>
+    void set_value(Args&&... vals) {
+        pst->data.emplace<2>(std::forward<Args>(vals)...);
+        pst->done.dec();
+    }
+
+    void set_exception(std::exception_ptr&& ptr) {
+        pst->data.emplace<1>(std::move(ptr));
+        pst->done.dec();
+    }
+};
+
+template <class T, class Sender>
+T sync_wait(Sender sender) {
+    sync_wait_state<T> state;
+    sender(sync_wait_receiver<T>{&state});
+    state.done.wait();
+    switch (state.data.index()) {
+    case 1:
+        std::rethrow_exception(std::move(std::get<1>(state.data)));
+    case 2:
+        return std::move(std::get<2>(state.data));
+    default:
+        abort();
+    }
+}
+
+template <class T, class Receiver>
+struct when_all_state {
+    Receiver receiver;
+    std::vector<std::variant<std::monostate, std::exception_ptr, T>> data;
+    work_tracker done;
+    explicit when_all_state(Receiver&& receiver_, const size_t predecessorCount)
+        : receiver(std::move(receiver_)), data(predecessorCount), done(predecessorCount) {}
+    when_all_state(const when_all_state&) = delete;
+    when_all_state& operator=(const when_all_state&) = delete;
+
+    void complete() {
+        if (done.dec()) {
+            auto localReceiver = std::move(receiver);
+            auto localBuff     = std::move(data);
+            delete this;
+            localReceiver.set_value(std::move(localBuff));
+        }
+    }
+};
+
+template <class T, class Receiver>
+struct when_all_receiver {
+    when_all_state<T, Receiver>* state;
+    size_t thisInstance;
+
+    template <class... Args>
+    void set_value(Args&&... vals) {
+        state->data[thisInstance].emplace<2>(std::forward<Args>(vals)...);
+        state->complete();
+    }
+    void set_error(std::exception_ptr ex) {
+        state->data[thisInstance].emplace<1>(std::move(ex));
+        state->complete();
+    }
+};
+
+template <class T, class Sender>
+struct when_all_sender {
+    std::vector<Sender> predecessors;
+
+    template <class Receiver>
+    void operator()(Receiver receiver) {
+        const auto predecessorCount = predecessors.size();
+        auto state = std::make_unique<when_all_state<T, Receiver>>(std::move(receiver), predecessorCount);
+        for (size_t idx = 0; idx < predecessorCount; ++idx) {
+            predecessors[idx](when_all_receiver<T, Receiver>{state.get(), idx});
+        }
+
+        (void) state.release();
+    }
+};
+
+template <class T, class Sender>
+when_all_sender<T, Sender> when_all(std::vector<Sender>&& tasks) {
+    return when_all_sender<T, Sender>{std::move(tasks)};
+}

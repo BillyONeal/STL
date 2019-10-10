@@ -4,6 +4,7 @@
 cmake_minimum_required(VERSION 3.15)
 project(msvc_standard_libraries_tools LANGUAGES CXX)
 
+set(BUILD_SHARED_LIBS Off)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED True)
 set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>")
@@ -15,4 +16,5 @@ include_directories(inc)
 
 add_subdirectory(jobify)
 add_subdirectory(parallelize)
+add_subdirectory(stltest)
 add_subdirectory(validate)

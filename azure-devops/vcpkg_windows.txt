@@ -3,3 +3,4 @@ boost-math:x86-windows
 boost-math:x64-windows
 boost-math:arm-windows
 boost-math:arm64-windows
+re2:x64-windows
