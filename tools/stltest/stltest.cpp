@@ -176,15 +176,6 @@ struct hydrated_configurations {
 //    const hydrated_compiler* compiler;
 //};
 
-struct wait_a_bit {
-    template <class T>
-    T operator()(T val) {
-        using namespace chrono_literals;
-        this_thread::sleep_for(1s);
-        return move(val);
-    }
-};
-
 extern "C" int wmain(int argc, const wchar_t* argv[]) {
     // try {
     vector<filesystem::path> roots;
@@ -198,7 +189,7 @@ extern "C" int wmain(int argc, const wchar_t* argv[]) {
 
     hydrated_configurations hydrated{compilers_table};
 
-    vector<then_sender<read_file_contents_async_sender, wait_a_bit>> inputs;
+    vector<polymorphic_sender<file_contents_result>> inputs;
     for (const filesystem::path& root : roots) {
         for (const filesystem::directory_entry& p : filesystem::directory_iterator(root)) {
             // bool isDirectory;
@@ -214,7 +205,7 @@ extern "C" int wmain(int argc, const wchar_t* argv[]) {
                 continue;
             }
 
-            inputs.emplace_back(then(read_file_contents_async(p.path()), wait_a_bit{}));
+            inputs.emplace_back(read_file_contents_async(p.path()));
         }
     }
 
@@ -232,7 +223,7 @@ extern "C" int wmain(int argc, const wchar_t* argv[]) {
             return totalOutput;
         });
 
-    auto total = sync_wait<string>(joined);
+    auto total = sync_wait<string>(std::move(joined));
     puts(total.c_str());
 
     // std::vector<test_configuration> configs;

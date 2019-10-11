@@ -722,7 +722,7 @@ template <class Receiver>
 class read_file_contents_async_state {
 public:
     explicit read_file_contents_async_state(Receiver receiver_, std::filesystem::path&& fileName_)
-        : fileName(std::move(fileName_)), receiver(receiver_),
+        : fileName(std::move(fileName_)), receiver(std::move(receiver_)),
           io(create_file(fileName.c_str(), FILE_READ_DATA | SYNCHRONIZE, FILE_SHARE_READ, nullptr, OPEN_EXISTING,
                  FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OVERLAPPED | FILE_FLAG_SEQUENTIAL_SCAN, HANDLE{}),
               callback, this) {
@@ -932,6 +932,12 @@ template <class T, class Sender>
 struct when_all_sender {
     std::vector<Sender> predecessors;
 
+    when_all_sender() = default;
+    when_all_sender(when_all_sender&&) = default;
+    when_all_sender& operator=(when_all_sender&&) = default;
+
+    when_all_sender(std::vector<Sender>&& predecessors_) : predecessors(std::move(predecessors_)) {}
+
     template <class Receiver>
     void operator()(Receiver receiver) {
         const auto predecessorCount = predecessors.size();
@@ -948,3 +954,97 @@ template <class T, class Sender>
 when_all_sender<T, Sender> when_all(std::vector<Sender>&& tasks) {
     return when_all_sender<T, Sender>{std::move(tasks)};
 }
+
+template <class T>
+class polymorphic_receiver {
+public:
+    polymorphic_receiver()                       = default;
+    polymorphic_receiver(polymorphic_receiver&&) = default;
+    polymorphic_receiver& operator=(polymorphic_receiver&&) = default;
+
+    template <class WrappedReceiver,
+        std::enable_if_t<!std::conjunction_v<std::is_reference<WrappedReceiver>, std::is_const<WrappedReceiver>,
+                             std::is_same<WrappedReceiver, polymorphic_receiver>>,
+            int> = 0>
+    explicit polymorphic_receiver(WrappedReceiver&& receiver)
+        : ptr(std::make_unique<type_specialized_<WrappedReceiver>>(std::move(receiver))) {}
+
+    void set_value(T&& value) {
+        ptr->set_value(std::move(value));
+    }
+
+    void set_error(std::exception_ptr ex) {
+        ptr->set_error(std::move(ex));
+    }
+
+private:
+    struct type_erased_ {
+        virtual void set_value(T&& value)             = 0;
+        virtual void set_error(std::exception_ptr ex) = 0;
+        virtual ~type_erased_() {}
+    };
+
+    template <class WrappedReceiver>
+    struct type_specialized_ : type_erased_ {
+        WrappedReceiver receiver;
+
+        explicit type_specialized_(WrappedReceiver&& wrapped) : receiver(std::move(wrapped)) {}
+
+        type_specialized_()                         = delete;
+        type_specialized_(const type_specialized_&) = delete;
+        type_specialized_& operator=(const type_specialized_&) = delete;
+
+        void set_value(T&& value) override {
+            receiver.set_value(std::move(value));
+        }
+
+        void set_error(std::exception_ptr ex) override {
+            receiver.set_error(std::move(ex));
+        }
+    };
+
+    std::unique_ptr<type_erased_> ptr;
+};
+
+template <class T>
+class polymorphic_sender {
+public:
+    polymorphic_sender()                     = default;
+    polymorphic_sender(polymorphic_sender&&) = default;
+    polymorphic_sender& operator=(polymorphic_sender&&) = default;
+
+    template <class WrappedSender,
+        std::enable_if_t<!std::conjunction_v<std::is_reference<WrappedSender>, std::is_const<WrappedSender>,
+                             std::is_same<WrappedSender, polymorphic_sender>>,
+            int> = 0>
+    explicit polymorphic_sender(WrappedSender&& sender)
+        : ptr(std::make_unique<type_specialized_<WrappedSender>>(std::move(sender))) {}
+
+    template <class Receiver>
+    void operator()(Receiver receiver) {
+        ptr->operator()(polymorphic_receiver<T>(std::move(receiver)));
+    }
+
+private:
+    struct type_erased_ {
+        virtual void operator()(polymorphic_receiver<T> receiver) = 0;
+        virtual ~type_erased_() {}
+    };
+
+    template <class WrappedSender>
+    struct type_specialized_ : type_erased_ {
+        WrappedSender sender;
+
+        explicit type_specialized_(WrappedSender&& wrapped) : sender(std::move(wrapped)) {}
+
+        type_specialized_()                         = delete;
+        type_specialized_(const type_specialized_&) = delete;
+        type_specialized_& operator=(const type_specialized_&) = delete;
+
+        void operator()(polymorphic_receiver<T> receiver) override {
+            sender(std::move(receiver));
+        }
+    };
+
+    std::unique_ptr<type_erased_> ptr;
+};
