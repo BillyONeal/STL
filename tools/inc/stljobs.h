@@ -932,7 +932,7 @@ template <class T, class Sender>
 struct when_all_sender {
     std::vector<Sender> predecessors;
 
-    when_all_sender() = default;
+    when_all_sender()                  = default;
     when_all_sender(when_all_sender&&) = default;
     when_all_sender& operator=(when_all_sender&&) = default;
 
